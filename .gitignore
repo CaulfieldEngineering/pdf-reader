@@ -1,27 +1,28 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-build/
+# Dependencies and build output
+node_modules/
+out/
 dist/
+*.tsbuildinfo
 
-# Virtual environment
-.venv/
-venv/
+# Generated at build time (copied from pdfjs-dist)
+src/renderer/public/pdfjs/
 
-# Model files (downloaded on first run to the per-user cache, never committed)
+# Scratch files
+.scratch/
+
+# Voice model files are downloaded on first run to the app's user data folder
 *.onnx
-voices-*.bin
 models/
 
 # Documents: never commit PDFs, except generated test fixtures
 *.pdf
 !tests/fixtures/*.pdf
 
-# Audio and screenshots from manual testing
+# Audio and images, except the icon set and docs screenshots
 *.wav
 *.png
+!build/*.png
+!build/icons/*.png
 !docs/*.png
 
 # Editors and OS
@@ -29,3 +30,7 @@ models/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Old Python prototype leftovers
+.venv/
+__pycache__/

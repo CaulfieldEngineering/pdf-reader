@@ -1,0 +1,44 @@
+appId: com.caulfieldengineering.readalong
+productName: Readalong
+copyright: Copyright © 2026 Caulfield Engineering
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+  - "!**/{test,tests,__tests__,example,examples,docs}/**"
+  - "!**/*.{md,markdown,d.ts,d.mts}"
+  - "!node_modules/onnxruntime-node/bin/napi-v*/{darwin,linux}/**"
+  - "!node_modules/onnxruntime-web/**"
+  - "!node_modules/@img/sharp-{darwin,linux,linuxmusl,wasm32}*/**"
+asar: true
+asarUnpack:
+  - node_modules/onnxruntime-node/**
+  - node_modules/onnxruntime-common/**
+  - node_modules/sharp/**
+  - node_modules/@img/**
+  - node_modules/kokoro-js/voices/**
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: Readalong-${version}-${arch}-${target}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: Readalong
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  include: build/installer.nsh
+  artifactName: Readalong-Setup-${version}.${ext}
+portable:
+  artifactName: Readalong-${version}-portable.${ext}
+npmRebuild: false

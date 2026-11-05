@@ -1,0 +1,43 @@
+{
+  "name": "pdf-reader",
+  "productName": "Readalong",
+  "version": "0.1.0",
+  "description": "A local, offline voice PDF reader: neural text to speech with sentence highlighting and smart skipping of headers, tables, figures and citations.",
+  "author": "Caulfield Engineering",
+  "license": "MIT",
+  "homepage": "https://github.com/CaulfieldEngineering/pdf-reader",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/copy-pdfjs-assets.mjs",
+    "dev": "electron-vite dev",
+    "prebuild": "node scripts/copy-pdfjs-assets.mjs",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "fixtures": "tsx scripts/make-fixtures.ts",
+    "analyze": "tsx scripts/analyze.ts",
+    "tts-bench": "tsx scripts/tts-bench.ts",
+    "icons": "tsx scripts/make-icons.ts",
+    "preview:web": "node scripts/preview-web.mjs",
+    "dist": "npm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "kokoro-js": "^1.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "electron": "^44.6.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.5.438",
+    "sharp": "^0.35.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.7",
+    "vitest": "^5.1.0"
+  }
+}
