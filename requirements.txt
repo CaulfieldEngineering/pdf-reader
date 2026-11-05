@@ -1,0 +1,8 @@
+pdfplumber>=0.11
+pypdfium2>=4.30
+kokoro-onnx>=0.6.1
+onnxruntime>=1.18
+numpy>=1.26
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9

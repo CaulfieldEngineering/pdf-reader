@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+
+# Model files (downloaded on first run to the per-user cache, never committed)
+*.onnx
+voices-*.bin
+models/
+
+# Documents: never commit PDFs, except generated test fixtures
+*.pdf
+!tests/fixtures/*.pdf
+
+# Audio and screenshots from manual testing
+*.wav
+*.png
+!docs/*.png
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
