@@ -2,6 +2,7 @@
 node_modules/
 out/
 dist/
+release/
 *.tsbuildinfo
 
 # Generated at build time (copied from pdfjs-dist)

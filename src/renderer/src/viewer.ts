@@ -21,6 +21,8 @@ interface PageView {
   canvas: HTMLCanvasElement;
   overlay: HTMLDivElement;
   hl: HTMLDivElement;
+  hov: HTMLDivElement;
+  flags: HTMLDivElement;
   w: number;
   h: number;
   cssScale: number;
@@ -86,12 +88,28 @@ export class Viewer {
   zoom = 1;
   userScrollAt = 0;
   onBlockClick: (blockId: number, k: number, ev: MouseEvent) => void = () => {};
+  /** Whether a click on this block reads it, and if not why (for the hover hint). */
+  readable: (b: BlockData) => { ok: boolean; why: string } = () => ({ ok: true, why: "" });
+  onFlagClick: (id: string) => void = () => {};
+  private hoverPending: PointerEvent | null = null;
+  private hoverKey = "";
+  private hoverPage: PageView | null = null;
+  private pressed = false;
 
   constructor(private scroller: HTMLElement, private host: HTMLElement) {
     for (const t of ["wheel", "touchmove", "keydown"]) {
       scroller.addEventListener(t, () => { this.userScrollAt = Date.now(); }, { passive: true });
     }
     host.addEventListener("click", (ev) => this.click(ev));
+    // Hover: show what a click would start reading. Hit-testing is done at most once per frame.
+    host.addEventListener("pointermove", (ev) => {
+      if (!this.hoverPending) requestAnimationFrame(() => this.hover());
+      this.hoverPending = ev;
+    });
+    host.addEventListener("pointerleave", () => this.clearHover());
+    host.addEventListener("pointerdown", () => { this.pressed = true; this.clearHover(); });
+    window.addEventListener("pointerup", () => { this.pressed = false; });
+    scroller.addEventListener("scroll", () => this.clearHover(), { passive: true });
     new ResizeObserver(() => this.layout()).observe(scroller);
   }
 
@@ -104,6 +122,9 @@ export class Viewer {
     this.hlPage = null;
     this.pdf = null;
     this.doc = null;
+    this.byPage = null;
+    this.hoverPage = null;
+    this.hoverKey = "";
   }
 
   load(pdf: PDFDocumentProxy, doc: DocData): void {
@@ -117,9 +138,11 @@ export class Viewer {
       const canvas = el("canvas");
       const overlay = el("div", "overlay");
       const hl = el("div", "hl");
-      page.append(canvas, overlay, hl, el("div", "pnum", String(i + 1)));
+      const hov = el("div", "hov");
+      const flags = el("div", "flags");
+      page.append(canvas, overlay, hov, hl, flags, el("div", "pnum", String(i + 1)));
       this.host.append(page);
-      this.pages.push({ index: i, el: page, canvas, overlay, hl, w: P.w, h: P.h, cssScale: 1, renderedScale: 0, visible: false, task: null });
+      this.pages.push({ index: i, el: page, canvas, overlay, hl, hov, flags, w: P.w, h: P.h, cssScale: 1, renderedScale: 0, visible: false, task: null });
     });
     for (const b of doc.blocks) this.blocks[b.id] = this.buildBlock(b);
     this.layout();
@@ -320,40 +343,123 @@ export class Viewer {
 
   // ---------------------------------------------------------------- clicks
 
-  private click(ev: MouseEvent): void {
-    const sel = window.getSelection();
-    if (sel && sel.toString().trim()) return;
-    const page = (ev.target as HTMLElement).closest<HTMLElement>(".page");
-    if (!page || !this.doc) return;
+  /** The block and sentence (or table row) under a point, if any. */
+  private hit(ev: MouseEvent): { pv: PageView; b: BlockData; k: number } | null {
+    const page = (ev.target as HTMLElement).closest?.<HTMLElement>(".page");
+    if (!page || !this.doc) return null;
     const pi = Number(page.dataset.p);
     const P = this.doc.pages[pi];
     const r = page.getBoundingClientRect();
     const x = ((ev.clientX - r.left) / r.width) * P.w;
     const y = ((ev.clientY - r.top) / r.height) * P.h;
     let best: BlockData | null = null, area = Infinity;
-    for (const b of this.doc.blocks) {
-      if (b.p !== pi) continue;
+    for (const b of this.pageBlocks(pi)) {
       const [x0, y0, x1, y1] = b.box;
       if (x >= x0 - 2 && x <= x1 + 2 && y >= y0 - 2 && y <= y1 + 2) {
         const a = (x1 - x0) * (y1 - y0);
         if (a < area) { best = b; area = a; }
       }
     }
-    if (!best) return;
-    let k = 0;
-    if (best.rows) {
-      k = Math.max(0, best.rows.findIndex((row) => y >= row.box[1] && y <= row.box[3]));
-    } else if (best.w.length) {
-      let wi = 0, dmin = Infinity;
-      best.w.forEach((w, i) => {
-        const dx = x < w[0] ? w[0] - x : x > w[2] ? x - w[2] : 0;
-        const dy = y < w[1] ? w[1] - y : y > w[3] ? y - w[3] : 0;
-        const d = dx * dx + dy * dy * 4;
-        if (d < dmin) { dmin = d; wi = i; }
-      });
-      const pos = best.w[wi][4];
-      k = Math.max(0, best.s.findIndex(([s, e]) => pos >= s && pos < e));
-    }
-    this.onBlockClick(best.id, k, ev);
+    if (!best) return null;
+    return { pv: this.pages[pi], b: best, k: sentenceAt(best, x, y) };
   }
+
+  private byPage: BlockData[][] | null = null;
+  private pageBlocks(pi: number): BlockData[] {
+    if (!this.byPage && this.doc) {
+      this.byPage = this.doc.pages.map(() => []);
+      for (const b of this.doc.blocks) this.byPage[b.p].push(b);
+    }
+    return this.byPage?.[pi] ?? [];
+  }
+
+  private hover(): void {
+    const ev = this.hoverPending;
+    this.hoverPending = null;
+    if (!ev || this.pressed || ev.buttons) { this.clearHover(); return; }
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) { this.clearHover(); return; }
+    const h = this.hit(ev);
+    if (!h) { this.clearHover(); return; }
+    const can = this.readable(h.b);
+    const key = `${h.b.id}:${h.k}:${can.ok}`;
+    if (key === this.hoverKey) return;
+    this.clearHover();
+    this.hoverKey = key;
+    this.hoverPage = h.pv;
+    h.pv.el.classList.add(can.ok ? "can-read" : "no-read");
+    h.pv.el.title = can.ok ? "" : can.why;
+    if (!can.ok) return;
+    const rects = h.b.rows ? (h.b.rows[h.k] ? [h.b.rows[h.k].box] : []) : sentenceRects(h.b, h.k);
+    rects.forEach((rc, i) => {
+      const d = el("div", "r");
+      place(d, rc, h.pv.w, h.pv.h, 1.5);
+      h.pv.hov.append(d);
+      if (i === 0) {
+        const go = el("div", "go", "\u25b6");
+        go.style.left = (rc[0] / h.pv.w) * 100 + "%";
+        go.style.top = `calc(${(((rc[1] + rc[3]) / 2) / h.pv.h) * 100}% - 7px)`;
+        h.pv.hov.append(go);
+      }
+    });
+    requestAnimationFrame(() => h.pv.hov.classList.add("on"));
+  }
+
+  clearHover(): void {
+    const pv = this.hoverPage;
+    this.hoverKey = "";
+    this.hoverPage = null;
+    if (!pv) return;
+    pv.el.classList.remove("can-read", "no-read");
+    pv.el.title = "";
+    pv.hov.classList.remove("on");
+    pv.hov.innerHTML = "";
+  }
+
+  /** Bookmark flags in the left margin of their sentence's first line. */
+  setFlags(items: { id: string; page: number; box: Box; label: string }[]): void {
+    for (const pv of this.pages) pv.flags.innerHTML = "";
+    for (const it of items) {
+      const pv = this.pages[it.page];
+      if (!pv) continue;
+      const f = el("div", "flag");
+      f.style.left = (Math.max(14, it.box[0]) / pv.w) * 100 + "%";
+      f.style.top = `calc(${(it.box[1] / pv.h) * 100}% + 1px)`;
+      f.title = `Bookmark: ${it.label}`;
+      f.addEventListener("click", (e) => { e.stopPropagation(); this.onFlagClick(it.id); });
+      pv.flags.append(f);
+    }
+  }
+
+  private click(ev: MouseEvent): void {
+    const sel = window.getSelection();
+    if (sel && sel.toString().trim()) return;
+    if ((ev.target as HTMLElement).closest?.(".flag")) return;
+    const h = this.hit(ev);
+    if (h) this.onBlockClick(h.b.id, h.k, ev);
+  }
+}
+
+/** Index of the sentence (or table row) of block `b` nearest to the point (x, y). */
+export function sentenceAt(b: BlockData, x: number, y: number): number {
+  if (b.rows) return Math.max(0, b.rows.findIndex((row) => y >= row.box[1] && y <= row.box[3]));
+  if (!b.w.length) return 0;
+  let wi = 0, dmin = Infinity;
+  b.w.forEach((w, i) => {
+    const dx = x < w[0] ? w[0] - x : x > w[2] ? x - w[2] : 0;
+    const dy = y < w[1] ? w[1] - y : y > w[3] ? y - w[3] : 0;
+    const d = dx * dx + dy * dy * 4;
+    if (d < dmin) { dmin = d; wi = i; }
+  });
+  const pos = b.w[wi][4];
+  return Math.max(0, b.s.findIndex(([s, e]) => pos >= s && pos < e));
+}
+
+/** Highlight boxes (one per line) for sentence k of block b. */
+export function sentenceRects(b: BlockData, k: number): Box[] {
+  const sent = b.s[k];
+  if (!sent) return [];
+  const idx: number[] = [];
+  b.w.forEach((w, i) => { if (w[4] < sent[1] && w[5] > sent[0]) idx.push(i); });
+  return wordRects(b, idx);
 }

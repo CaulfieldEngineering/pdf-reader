@@ -34,13 +34,19 @@ const stub = `
       return { version: "preview", mica: false, window: { maximized: false, alwaysOnTop: q.has("pin"), focused: true, mini: false },
         file: q.has("empty") ? null : { path: "", name: ${JSON.stringify(pdf.split(/[\\\\/]/).pop())}, data }, screenshot: q.has("shot") };
     },
-    openDialog: async () => null, openPath: async () => null, pathForFile: () => "", recent: async () => [],
+    openDialog: async () => null, openPath: async () => null, pathForFile: () => "",
+    library: async () => [], docRecord: async () => null, openRecent: async () => null, locate: async () => null,
+    removeRecent: async () => {}, pinRecent: async () => {}, setPosition() {},
+    addBookmark: async (key, at) => ({ id: "bm" + Math.random(), ...at, label: at.snippet.split(" ").slice(0, 6).join(" ") + " (p. " + (at.page + 1) + ")", note: "", created: Date.now() }),
+    updateBookmark: async () => true, removeBookmark: async () => true, exportLibrary: async () => null, importLibrary: async () => null,
+    lexicon: async () => ({ version: 1, entries: [] }), setLexicon: async () => {}, exportLexicon: async () => null, importLexicon: async () => null,
+    checkVoices: async () => [], shot: async (name) => { document.title = "shot:" + name; }, shotLog() {},
     onOpenFile() {}, onCommand() {}, showMenu() {}, minimize() {}, toggleMaximize() {}, close() {},
     setAlwaysOnTop() {}, toggleMini() {}, onWindowState() {},
     ttsStatus: async () => ({ state: "ready", progress: 1, message: "", dtype: "fp32", rtf: 0.19 }),
     onTtsStatus() {}, voices: async () => voices,
     async speak(tokens) { const per = 0.32, d = tokens.length * per + 0.3; return { wav: silentWav(d), starts: tokens.map((_, i) => 0.15 + i * per), duration: d, rtf: 0.19 }; },
-    setDtype() {}, retryTts() {}, shotReady(name) { document.title = "shot:" + name; },
+    setDtype() {}, retryTts() {},
   };
 })();`;
 

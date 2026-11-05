@@ -30,6 +30,14 @@
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M7 12h10M12 7v10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M8 10l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3.5h6.5L18 8v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19V5a1.5 1.5 0 0 1 1-1.5zM13 3.5V8h5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+  <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M7 4.5h10a1 1 0 0 1 1 1v14l-6-3.6-6 3.6v-14a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-bookmark-on" viewBox="0 0 24 24"><path d="M7 4.5h10a1 1 0 0 1 1 1v14l-6-3.6-6 3.6v-14a1 1 0 0 1 1-1z" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M5 19l1-4L15.5 5.5a2 2 0 0 1 3 3L9 18z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 4.5l2.3 4.7 5.2.8-3.8 3.6.9 5.2L12 16.4l-4.6 2.4.9-5.2-3.8-3.6 5.2-.8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-star-on" viewBox="0 0 24 24"><path d="M12 4.5l2.3 4.7 5.2.8-3.8 3.6.9 5.2L12 16.4l-4.6 2.4.9-5.2-3.8-3.6 5.2-.8z" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M4.5 11L12 4.5l7.5 6.5M6.5 9.5V19h4v-5h3v5h4V9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+  <symbol id="i-speak" viewBox="0 0 24 24"><path d="M5 10v4h3l4 3.5v-11L8 10z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
   <symbol id="logo" viewBox="0 0 256 256"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4C8DFF"/><stop offset="1" stop-color="#6A4DFF"/></linearGradient></defs><rect x="12" y="12" width="232" height="232" rx="58" fill="url(#lg)"/><path d="M62 52h72l34 34v104a14 14 0 0 1-14 14H62a14 14 0 0 1-14-14V66a14 14 0 0 1 14-14z" fill="#fff"/><path d="M134 52v22a12 12 0 0 0 12 12h22z" fill="#C9D6FF"/><rect x="68" y="102" width="78" height="12" rx="6" fill="#B9C8F7"/><rect x="68" y="126" width="80" height="14" rx="7" fill="#FFC83D"/><rect x="68" y="152" width="64" height="12" rx="6" fill="#B9C8F7"/><path d="M184 104a40 40 0 0 1 0 58" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round"/><path d="M206 84a68 68 0 0 1 0 98" fill="none" stroke="#fff" stroke-width="13" stroke-linecap="round" opacity=".75"/></symbol>
 </svg>
 
@@ -39,7 +47,7 @@
   <div class="drag-fill"></div>
   <div class="voice-pill" id="voice-pill" title="Voice model"><span class="dot"></span><span id="voice-pill-text">Voice: starting</span><span class="bar"><span id="voice-pill-bar"></span></span></div>
   <div class="tb-tools">
-    <button class="tb" id="btn-sidebar" title="Sections (Ctrl+B)"><svg><use href="#i-sidebar"/></svg></button>
+    <button class="tb" id="btn-sidebar" title="Sidebar (Ctrl+Shift+B)"><svg><use href="#i-sidebar"/></svg></button>
     <button class="tb" id="btn-settings" title="Settings (Ctrl+,)"><svg><use href="#i-settings"/></svg></button>
     <button class="tb" id="btn-mini" title="Mini player (Ctrl+M)"><svg><use href="#i-mini" id="mini-icon"/></svg></button>
     <button class="tb" id="btn-pin" title="Keep on top (Ctrl+T)"><svg><use href="#i-pin" id="pin-icon"/></svg></button>
@@ -53,21 +61,36 @@
 
 <div class="workspace" id="workspace">
   <aside class="sidebar" id="sidebar">
-    <div class="pane-head"><span>Sections</span><span class="sub" id="sections-source"></span></div>
+    <div class="tabs" role="tablist">
+      <button class="tab on" id="tab-sections" role="tab">Sections</button>
+      <button class="tab" id="tab-bookmarks" role="tab">Bookmarks <span class="badge" id="bm-count"></span></button>
+      <span class="sub" id="sections-source"></span>
+    </div>
     <nav class="sections" id="sections"></nav>
+    <div class="bookmarks" id="bookmarks" hidden></div>
     <div class="pane-foot" id="skip-summary"></div>
   </aside>
 
   <main class="viewer" id="viewer">
     <div class="scroller" id="scroller" tabindex="-1"><div class="pages" id="pages"></div></div>
 
-    <section class="welcome" id="welcome">
-      <div class="welcome-card">
-        <svg class="welcome-logo"><use href="#logo"/></svg>
-        <h1>Listen to any PDF</h1>
-        <p>Drop a PDF here, or open one. Readalong reads it aloud with a natural voice and skips headers, tables, figures and citations as you choose. Everything stays on this PC.</p>
-        <button class="primary" id="btn-open"><svg><use href="#i-open"/></svg>Open a PDF</button>
-        <div class="recent" id="recent"></div>
+    <section class="home" id="home">
+      <div class="home-inner">
+        <div class="home-head">
+          <svg class="home-logo"><use href="#logo"/></svg>
+          <div>
+            <h1>Readalong</h1>
+            <p>Listen to any PDF with a natural voice. Everything stays on this PC.</p>
+          </div>
+          <div class="home-actions">
+            <button class="ghost" id="btn-home-back" hidden>Back to reading</button>
+            <button class="primary" id="btn-open"><svg><use href="#i-open"/></svg>Open a PDF</button>
+          </div>
+        </div>
+        <div id="home-continue"></div>
+        <div class="home-list-head"><h2>Recent</h2><span class="sub" id="home-count"></span></div>
+        <div class="home-list" id="home-list"></div>
+        <p class="home-empty" id="home-empty">Drop a PDF anywhere in this window, or open one. It will show up here with your reading position and bookmarks.</p>
       </div>
     </section>
 
@@ -96,6 +119,7 @@
           <button class="ctl sm" id="btn-faster"><svg><use href="#i-plus"/></svg></button>
         </div>
         <select class="voice-select" id="voice-quick" title="Voice"></select>
+        <button class="ctl" id="btn-bookmark" title="Bookmark this sentence (Ctrl+B)"><svg><use href="#i-bookmark"/></svg></button>
       </div>
     </div>
 
@@ -116,10 +140,28 @@
         <p class="hint">Up to 2× the voice itself speaks faster; beyond that playback is sped up.</p>
         <label class="row"><span>Model precision</span><select id="dtype"><option value="fp32">Full (fp32, 326 MB)</option><option value="fp16">Half (fp16, 163 MB)</option><option value="q8">Compact (8-bit, 92 MB)</option></select></label>
       </section>
+      <section class="card" id="pron-card">
+        <h3>Pronunciations</h3>
+        <p class="hint">How written forms are spoken, e.g. kW as "kilowatts". Applies to speech only; the page and the highlight stay as written.</p>
+        <div class="pron-tools">
+          <input type="search" id="pron-search" placeholder="Search" spellcheck="false">
+          <button class="ghost sm" id="pron-add">Add</button>
+        </div>
+        <div class="pron-list" id="pron-list"></div>
+        <div class="pron-preview">
+          <input type="text" id="pron-sample" value="The stage delivers 5 kW at 4.8–7.1 MHz and draws 10 mA from a 48 V rail." spellcheck="false">
+          <button class="ghost sm" id="pron-play" title="Speak the sample with the current pronunciations"><svg><use href="#i-speak"/></svg>Preview</button>
+        </div>
+        <div class="pron-foot">
+          <button class="link" id="pron-import">Import</button>
+          <button class="link" id="pron-export">Export</button>
+          <button class="link" id="pron-restore">Restore engineering units</button>
+        </div>
+      </section>
       <section class="card">
         <h3>Skip while reading</h3>
         <div id="skip-groups"></div>
-        <label class="switch"><input type="checkbox" id="show-skipped"><span class="track"></span><span>Show skipped text dimmed on the page</span></label>
+        <label class="switch"><input type="checkbox" id="show-skipped"><span class="track"></span><span>Shade skipped text on the page</span></label>
       </section>
       <section class="card">
         <h3>Reading</h3>
@@ -136,6 +178,8 @@
           <dt>↑ ↓</dt><dd>Previous or next paragraph</dd>
           <dt>[ ]</dt><dd>Slower or faster</dd>
           <dt>Ctrl+O</dt><dd>Open a PDF</dd>
+          <dt>Ctrl+B</dt><dd>Bookmark this sentence</dd>
+          <dt>Ctrl+Shift+O</dt><dd>Home (recent files)</dd>
           <dt>Ctrl+M</dt><dd>Mini player</dd>
           <dt>Ctrl+T</dt><dd>Keep on top</dd>
           <dt>Ctrl+Alt+Space</dt><dd>Play or pause from any app</dd>
@@ -160,6 +204,7 @@
       <button class="ctl sm" id="m-faster"><svg><use href="#i-plus"/></svg></button>
     </div>
     <span class="mini-pos" id="mini-pos"></span>
+    <button class="ctl" id="m-bookmark" title="Bookmark this sentence (Ctrl+B)"><svg><use href="#i-bookmark"/></svg></button>
     <button class="ctl" id="m-expand" title="Full window (Ctrl+M)"><svg><use href="#i-expand"/></svg></button>
   </div>
 </div>

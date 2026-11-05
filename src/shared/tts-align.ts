@@ -86,3 +86,64 @@ export function encodeWav(samples: Float32Array, rate: number): Uint8Array {
   }
   return new Uint8Array(buf);
 }
+
+const SKIP = new Set([" ", "ˈ", "ˌ"]); // spaces and stress marks don't take part in matching
+
+/**
+ * Which token each character of a clause's phonemes belongs to.
+ *
+ * espeak phonemises a clause as a whole (natural stress, words sometimes
+ * merged: "have been" -> "hɐvbɪn"), while each token phonemised alone gives
+ * its own phonemes. The two are aligned character by character with an edit
+ * distance, which is monotonic, so every token gets one contiguous stretch of
+ * the clause's phonemes. Stress marks go with the sound after them, spaces
+ * with the sound before.
+ */
+export function alignPhonemes(tokenPhonemes: string[], clause: string): number[] {
+  const a: { c: string; t: number }[] = [];
+  tokenPhonemes.forEach((p, t) => { for (const c of p) if (!SKIP.has(c)) a.push({ c, t }); });
+  const chars = [...clause];
+  const bIdx: number[] = [];
+  chars.forEach((c, i) => { if (!SKIP.has(c)) bIdx.push(i); });
+  const n = a.length, m = bIdx.length;
+  const out: number[] = new Array(chars.length).fill(-1);
+  if (!n || !m) return out.map(() => (n ? a[0].t : 0));
+  // DP with a cheap substitution for vowel/consonant variants is overkill; unit costs work well
+  const w = m + 1;
+  const d = new Uint32Array((n + 1) * w);
+  for (let j = 0; j <= m; j++) d[j] = j;
+  for (let i = 1; i <= n; i++) {
+    d[i * w] = i;
+    const ai = a[i - 1].c;
+    for (let j = 1; j <= m; j++) {
+      const sub = d[(i - 1) * w + j - 1] + (ai === chars[bIdx[j - 1]] ? 0 : 1);
+      const del = d[(i - 1) * w + j] + 1;
+      const ins = d[i * w + j - 1] + 1;
+      d[i * w + j] = Math.min(sub, del, ins);
+    }
+  }
+  // Backtrace: give each clause sound the token of the token sound it lines up with
+  const tokOfB: number[] = new Array(m).fill(-1);
+  let i = n, j = m;
+  while (i > 0 && j > 0) {
+    const here = d[i * w + j];
+    const sub = d[(i - 1) * w + j - 1] + (a[i - 1].c === chars[bIdx[j - 1]] ? 0 : 1);
+    if (here === sub) { tokOfB[j - 1] = a[i - 1].t; i--; j--; }
+    else if (here === d[(i - 1) * w + j] + 1) i--;
+    else { tokOfB[j - 1] = a[Math.max(0, i - 1)].t; j--; }
+  }
+  for (; j > 0; j--) tokOfB[j - 1] = a[0].t;
+  // Keep the mapping monotonic
+  for (let k = 1; k < m; k++) if (tokOfB[k] < tokOfB[k - 1]) tokOfB[k] = tokOfB[k - 1];
+  bIdx.forEach((ci, k) => { out[ci] = tokOfB[k]; });
+  // Stress marks take the next sound's token; spaces the previous one's
+  for (let k = chars.length - 1, next = out[bIdx[m - 1]]; k >= 0; k--) {
+    if (out[k] >= 0) next = out[k];
+    else if (chars[k] !== " ") out[k] = next;
+  }
+  for (let k = 0, prev = out.find((v) => v >= 0) ?? 0; k < chars.length; k++) {
+    if (out[k] >= 0) prev = out[k];
+    else out[k] = prev;
+  }
+  return out;
+}

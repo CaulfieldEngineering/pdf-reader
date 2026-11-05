@@ -2,12 +2,15 @@
 
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeTheme, screen, shell, utilityProcess, type UtilityProcess } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { open as openFile, readFile } from "node:fs/promises";
 import { release } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import icon from "../../build/icon.png?asset";
 import workerPath from "./tts-worker?modulePath";
-import type { Command, FileData, InitialInfo, RecentFile, SpeakReply, TtsStatus, VoiceInfo, WindowState } from "../shared/ipc";
+import type { Command, FileData, InitialInfo, RecentDoc, SpeakReply, TtsStatus, VoiceInfo, WindowState } from "../shared/ipc";
+import { parseLexicon, type Lexicon } from "../shared/lexicon";
+import * as lib from "../shared/library";
+import { fingerprint, JsonStore, openLexicon, openLibrary, writeJson } from "./store";
 
 const APP_ID = "com.caulfieldengineering.readalong";
 const MINI = { width: 460, height: 176 };
@@ -32,7 +35,8 @@ interface Stored {
   maximized?: boolean;
   alwaysOnTop?: boolean;
   dtype?: string;
-  recent?: RecentFile[];
+  /** v0.1.0 recent list, migrated into the library on first start. */
+  recent?: { path: string; name: string; openedAt: number }[];
 }
 const storePath = () => join(app.getPath("userData"), "settings.json");
 let stored: Stored = {};
@@ -64,22 +68,53 @@ function pdfArg(argv: string[]): string | null {
 
 // ------------------------------------------------------------------ files
 
-async function readPdf(path: string): Promise<FileData | null> {
+let library: JsonStore<lib.Library>;
+let lexicon: JsonStore<Lexicon>;
+
+async function readPdf(path: string, quiet = false): Promise<FileData | null> {
   try {
     const data = new Uint8Array(await readFile(path));
-    addRecent(path);
-    return { path, name: basename(path), data };
+    const key = fingerprint(data);
+    lib.touch(library.value, { key, path, name: basename(path), size: data.length });
+    library.save();
+    try { app.addRecentDocument(path); } catch { /* not supported */ }
+    return { path, name: basename(path), data, key };
   } catch (e: any) {
-    dialog.showErrorBox("Couldn't open the file", `${path}\n\n${e?.message ?? e}`);
+    if (!quiet) dialog.showErrorBox("Couldn't open the file", `${path}
+
+${e?.message ?? e}`);
     return null;
   }
 }
-function addRecent(path: string) {
-  const list = (stored.recent ?? []).filter((r) => r.path.toLowerCase() !== path.toLowerCase());
-  list.unshift({ path, name: basename(path), openedAt: Date.now() });
-  stored.recent = list.slice(0, 12);
-  saveStore();
-  try { app.addRecentDocument(path); } catch { /* not supported */ }
+
+/** Fingerprint without reading the whole file. */
+async function fingerprintFile(path: string): Promise<{ key: string; size: number } | null> {
+  try {
+    const fh = await openFile(path, "r");
+    try {
+      const { size } = await fh.stat();
+      const buf = new Uint8Array(Math.min(size, lib.FINGERPRINT_BYTES));
+      await fh.read(buf, 0, buf.length, 0);
+      const key = fingerprint(buf).slice(0, 16) + size.toString(36);
+      return { key, size };
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** Bring the v0.1.0 recent list into the library once. */
+async function migrateRecent(): Promise<void> {
+  if (!stored.recent?.length) return;
+  for (const r of [...stored.recent].reverse()) {
+    const fp = await fingerprintFile(r.path);
+    if (fp) lib.touch(library.value, { key: fp.key, path: r.path, name: r.name, size: fp.size }, r.openedAt);
+  }
+  delete stored.recent;
+  saveStore(true);
+  library.save(true);
 }
 
 // ------------------------------------------------------------------ window
@@ -87,7 +122,8 @@ function addRecent(path: string) {
 let win: BrowserWindow | null = null;
 let pendingFile: string | null = pdfArg(process.argv);
 
-const micaSupported = process.platform === "win32" && Number(release().split(".")[2] ?? 0) >= 22621;
+// Mica on Windows 11 22H2+, but not in hidden test runs (it needs a visible window)
+const micaSupported = process.platform === "win32" && Number(release().split(".")[2] ?? 0) >= 22621 && !TEST;
 
 function visibleBounds(b?: Stored["bounds"]) {
   if (!b) return undefined;
@@ -125,7 +161,7 @@ function createWindow() {
     icon,
     titleBarStyle: "hidden",
     backgroundColor: micaSupported ? "#00000000" : nativeTheme.shouldUseDarkColors ? "#1c1c1c" : "#f3f3f3",
-    ...(micaSupported && !TEST ? { backgroundMaterial: "mica" as const } : {}),
+    ...(micaSupported ? { backgroundMaterial: "mica" as const } : {}),
     alwaysOnTop: !TEST && !!stored.alwaysOnTop,
     webPreferences: {
       preload: join(import.meta.dirname, "../preload/index.cjs"),
@@ -229,7 +265,7 @@ function startWorker() {
       win?.webContents.send("tts:status", tts);
     }
   });
-  worker.postMessage({ type: "init", cacheDir: modelsDir(), dtype });
+  worker.postMessage({ type: "init", cacheDir: modelsDir(), dtype, lexicon: lexicon.value.entries });
 }
 
 function ask<T>(msg: Record<string, unknown>): Promise<T> {
@@ -248,35 +284,64 @@ function send(cmd: Command) {
 }
 function popupMenu(x: number, y: number) {
   if (!win) return;
-  const recent = stored.recent ?? [];
+  const recent = lib.recent(library.value).slice(0, 10);
   const menu = Menu.buildFromTemplate([
     { label: "Open…", accelerator: "CmdOrCtrl+O", click: () => send("open") },
+    { label: "Home (recent files)", accelerator: "CmdOrCtrl+Shift+O", click: () => send("home") },
     {
       label: "Open recent",
       enabled: recent.length > 0,
-      submenu: [
-        ...recent.map((r) => ({
-          label: r.name,
-          sublabel: r.path,
-          click: async () => {
-            const f = await readPdf(r.path);
-            if (f) win?.webContents.send("file:open", f);
-          },
-        })),
-        { type: "separator" as const },
-        { label: "Clear list", click: () => { stored.recent = []; saveStore(); app.clearRecentDocuments(); } },
-      ],
+      submenu: recent.map((r) => ({
+        label: (r.pinned ? "★ " : "") + r.name,
+        sublabel: r.path,
+        click: async () => {
+          const f = r.path && existsSync(r.path) ? await readPdf(r.path) : null;
+          if (f) win?.webContents.send("file:open", f);
+          else send("home");
+        },
+      })),
     },
     { type: "separator" },
+    { label: "Add bookmark", accelerator: "CmdOrCtrl+B", click: () => send("bookmark") },
     { label: "Mini player", accelerator: "CmdOrCtrl+M", click: () => toggleMini() },
     { label: "Always on top", type: "checkbox", checked: win.isAlwaysOnTop(), accelerator: "CmdOrCtrl+T", click: (i) => { win?.setAlwaysOnTop(i.checked, "floating"); stored.alwaysOnTop = i.checked; saveStore(); } },
-    { label: "Sections", accelerator: "CmdOrCtrl+B", click: () => send("sidebar") },
+    { label: "Sidebar", accelerator: "CmdOrCtrl+Shift+B", click: () => send("sidebar") },
     { label: "Settings", accelerator: "CmdOrCtrl+,", click: () => send("settings") },
+    { type: "separator" },
+    { label: "Export bookmarks…", click: () => void exportLibrary() },
+    { label: "Import bookmarks…", click: () => void importLibrary() },
     { type: "separator" },
     { label: "About Readalong", click: () => dialog.showMessageBox(win!, { type: "info", title: "Readalong", message: `Readalong ${app.getVersion()}`, detail: "A local, offline voice PDF reader.\nVoice: Kokoro-82M (Apache-2.0). PDF: PDF.js (Apache-2.0).\nhttps://github.com/CaulfieldEngineering/pdf-reader", icon }) },
     { label: "Exit", click: () => app.quit() },
   ]);
   menu.popup({ window: win, x: Math.round(x), y: Math.round(y) });
+}
+
+async function exportLibrary(): Promise<string | null> {
+  if (!win) return null;
+  const r = await dialog.showSaveDialog(win, { title: "Export bookmarks", defaultPath: "readalong-bookmarks.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+  if (r.canceled || !r.filePath) return null;
+  writeJson(r.filePath, library.value);
+  return r.filePath;
+}
+
+async function importLibrary(): Promise<number | null> {
+  if (!win) return null;
+  const r = await dialog.showOpenDialog(win, { title: "Import bookmarks", properties: ["openFile"], filters: [{ name: "JSON", extensions: ["json"] }] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  try {
+    const n = lib.mergeLibrary(library.value, lib.parseLibrary(JSON.parse(readFileSync(r.filePaths[0], "utf8"))));
+    library.save();
+    win.webContents.send("command", "home");
+    return n;
+  } catch (e: any) {
+    dialog.showErrorBox("Couldn't import", String(e?.message ?? e));
+    return null;
+  }
+}
+
+function sendLexicon() {
+  worker?.postMessage({ type: "lexicon", entries: lexicon.value.entries });
 }
 
 // ------------------------------------------------------------------ IPC
@@ -293,7 +358,59 @@ function registerIpc() {
     return r.canceled || !r.filePaths[0] ? null : readPdf(r.filePaths[0]);
   });
   ipcMain.handle("file:open", (_e, path: string) => (typeof path === "string" && /\.pdf$/i.test(path) ? readPdf(path) : null));
-  ipcMain.handle("file:recent", () => stored.recent ?? []);
+  ipcMain.handle("library:list", (): RecentDoc[] =>
+    lib.recent(library.value).map((d) => ({ ...d, exists: !!d.path && existsSync(d.path), folder: d.path ? dirname(d.path) : "" })));
+  ipcMain.handle("library:doc", (_e, key: string) => lib.findDoc(library.value, key) ?? null);
+  ipcMain.handle("library:open", async (_e, key: string) => {
+    const d = lib.findDoc(library.value, key);
+    return d?.path && existsSync(d.path) ? readPdf(d.path) : null;
+  });
+  ipcMain.handle("library:locate", async (_e, key: string) => {
+    const d = lib.findDoc(library.value, key);
+    if (!d || !win) return null;
+    const r = await dialog.showOpenDialog(win, { title: `Locate ${d.name}`, defaultPath: d.path || undefined, properties: ["openFile"], filters: [{ name: "PDF documents", extensions: ["pdf"] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const path = r.filePaths[0];
+    const data = new Uint8Array(await readFile(path));
+    const file = { path, name: basename(path), data, key: fingerprint(data) };
+    const verdict = lib.relocate(library.value, key, { key: file.key, path, name: file.name, size: data.length });
+    lib.touch(library.value, { key: file.key, path, name: file.name, size: data.length });
+    library.save();
+    return verdict === "missing" ? null : { verdict, file };
+  });
+  ipcMain.handle("library:remove", (_e, key: string) => { lib.removeDoc(library.value, key); library.save(); });
+  ipcMain.handle("library:pin", (_e, key: string, pinned: boolean) => { lib.pinDoc(library.value, key, !!pinned); library.save(); });
+  ipcMain.on("library:position", (_e, key: string, pos: lib.Position) => { lib.setPosition(library.value, key, pos); library.save(); });
+  ipcMain.handle("bookmark:add", (_e, key: string, at, label?: string, note?: string) => { const b = lib.addBookmark(library.value, key, at, label, note); library.save(); return b; });
+  ipcMain.handle("bookmark:update", (_e, key: string, id: string, patch) => { const ok = lib.updateBookmark(library.value, key, id, patch); library.save(); return ok; });
+  ipcMain.handle("bookmark:remove", (_e, key: string, id: string) => { const ok = lib.removeBookmark(library.value, key, id); library.save(); return ok; });
+  ipcMain.handle("library:export", () => exportLibrary());
+  ipcMain.handle("library:import", () => importLibrary());
+
+  ipcMain.handle("lexicon:get", () => lexicon.value);
+  ipcMain.handle("lexicon:set", (_e, lex: Lexicon) => {
+    lexicon.value = parseLexicon(lex);
+    lexicon.save();
+    sendLexicon();
+  });
+  ipcMain.handle("lexicon:export", async () => {
+    if (!win) return null;
+    const r = await dialog.showSaveDialog(win, { title: "Export pronunciations", defaultPath: "readalong-pronunciations.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+    if (r.canceled || !r.filePath) return null;
+    writeJson(r.filePath, lexicon.value);
+    return r.filePath;
+  });
+  ipcMain.handle("lexicon:import", async () => {
+    if (!win) return null;
+    const r = await dialog.showOpenDialog(win, { title: "Import pronunciations", properties: ["openFile"], filters: [{ name: "JSON", extensions: ["json"] }] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    try {
+      return parseLexicon(JSON.parse(readFileSync(r.filePaths[0], "utf8")));
+    } catch (e: any) {
+      dialog.showErrorBox("Couldn't import", String(e?.message ?? e));
+      return null;
+    }
+  });
   ipcMain.on("menu:popup", (_e, x: number, y: number) => popupMenu(x, y));
 
   ipcMain.on("win:minimize", () => win?.minimize());
@@ -313,7 +430,7 @@ function registerIpc() {
   ipcMain.handle("tts:speak", async (_e, tokens: string[], voice: string, speed: number): Promise<SpeakReply> => {
     const r = await ask<SpeakReply>({ type: "speak", tokens: tokens.slice(0, 400), voice, speed });
     tts.rtf = r.rtf;
-    return { wav: r.wav, starts: r.starts, duration: r.duration, rtf: r.rtf };
+    return { wav: r.wav, starts: r.starts, duration: r.duration, rtf: r.rtf, ...(r.fallback ? { fallback: r.fallback } : {}) };
   });
   ipcMain.on("tts:dtype", (_e, d: string) => {
     if (!["fp32", "fp16", "q8"].includes(d)) return;
@@ -322,11 +439,12 @@ function registerIpc() {
     startWorker();
   });
   ipcMain.on("tts:retry", () => startWorker());
+  ipcMain.handle("tts:check-voices", async () => (await ask<{ voices: unknown }>({ type: "check-voices" })).voices);
 
-  // Screenshot self-test: capture the full layout, then the mini player
-  ipcMain.on("shot:ready", async (_e, name: string) => {
+  // Screenshot self-test: the page stages a view, then asks for a capture
+  ipcMain.handle("shot", async (_e, name: string) => {
     if (!shotDir || !win) return;
-    await new Promise((r) => setTimeout(r, 900));
+    await new Promise((r) => setTimeout(r, 700));
     const img = await win.webContents.capturePage();
     mkdirSync(shotDir, { recursive: true });
     writeFileSync(join(shotDir, `${name}.png`), img.toPNG());
@@ -337,13 +455,10 @@ function registerIpc() {
       win.setAlwaysOnTop(false);
       console.log(`[check] always on top: set -> ${on}, cleared -> ${win.isAlwaysOnTop()}`);
       console.log(`[check] window bounds ${JSON.stringify(win.getBounds())}, visible ${win.isVisible()}, focused ${win.isFocused()}`);
-      toggleMini();
-      setTimeout(() => console.log(`[check] mini player bounds ${JSON.stringify(win?.getBounds())}, mini=${windowState().mini}`), 400);
-      setTimeout(() => win?.webContents.send("command", "mini"), 600);
-    } else if (name === "mini") {
-      setTimeout(() => app.quit(), 300);
     }
+    if (name === "mini") setTimeout(() => app.quit(), 300);
   });
+  ipcMain.on("shot:log", (_e, msg: string) => console.log(`[check] ${msg}`));
 }
 
 // ------------------------------------------------------------------ app
@@ -360,8 +475,15 @@ app.on("second-instance", async (_e, argv) => {
   }
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Test runs can force a theme for screenshots
+  if (TEST && /^(light|dark)$/.test(process.env.READALONG_TEST_THEME ?? "")) nativeTheme.themeSource = process.env.READALONG_TEST_THEME as "light" | "dark";
   loadStore();
+  // In test mode these live in the separate test profile
+  library = openLibrary(join(app.getPath("userData"), "library.json"));
+  lexicon = openLexicon(join(app.getPath("userData"), "pronunciations.json"));
+  if (!existsSync(join(app.getPath("userData"), "pronunciations.json"))) lexicon.save(true);
+  await migrateRecent();
   Menu.setApplicationMenu(null);
   registerIpc();
   createWindow();
@@ -378,6 +500,8 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
+  library?.flush();
+  lexicon?.flush();
   globalShortcut.unregisterAll();
   worker?.kill();
 });

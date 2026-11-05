@@ -4,11 +4,14 @@ import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { analyze, toData, type BlockData, type DocData } from "../../shared/analysis/analyze";
 import type { SkipGroup } from "../../shared/analysis/detectors/types";
-import type { Command, FileData, ReadalongApi, TtsStatus, VoiceInfo, WindowState } from "../../shared/ipc";
+import type { Bookmark, Command, DocRecord, FileData, ReadalongApi, RecentDoc, TtsStatus, VoiceInfo, WindowState } from "../../shared/ipc";
 import { buildQueue, isSkipped, nearestUtterance, skipValue, type Utterance, utteranceText } from "../../shared/reading";
+import { renderBookmarks } from "./bookmarks";
+import { renderHome } from "./home";
 import { Player } from "./player";
-import { loadPosition, loadSettings, savePosition, saveSettings } from "./settings";
-import { Viewer, kindLabel, wordRects } from "./viewer";
+import { PronEditor } from "./pronunciations";
+import { loadPosition, loadSettings, saveSettings } from "./settings";
+import { Viewer, kindLabel, sentenceRects, wordRects } from "./viewer";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -26,6 +29,14 @@ let pdfTask: ReturnType<typeof pdfjs.getDocument> | null = null;
 let groups: SkipGroup[] = [];
 let screenshot = false;
 let windowState: WindowState = { maximized: false, alwaysOnTop: false, focused: true, mini: false };
+let bookmarks: Bookmark[] = [];
+let editingBookmark: string | null = null;
+const homeExpanded = new Set<string>();
+const pron = new PronEditor($("pron-list"), {
+  save: (lex) => {
+    void api.setLexicon(lex).then(() => { player.lexRev++; });
+  },
+});
 
 // ------------------------------------------------------------------ toast
 
@@ -52,6 +63,11 @@ const player: Player = new Player(api, {
     if ("mediaSession" in navigator) navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   },
   message: (m) => toast(m),
+  voiceFallback: (f) => {
+    const name = (id: string) => (document.querySelector(`#voice option[value="${id}"]`)?.textContent ?? id).replace(/ \(.*$/, "");
+    toast(`Couldn't load the voice ${name(f.requested)} (${f.reason}). Using ${name(f.used)} instead.`, 7000);
+    if (settings.voice === f.requested) setVoice(f.used, false);
+  },
   gapAfter: (i: number): number => {
     const u: Utterance | undefined = player.queue[i], n: Utterance | undefined = player.queue[i + 1];
     if (!u || !n || !doc) return 0;
@@ -81,8 +97,18 @@ function showPosition(i: number, scroll: boolean): void {
     if (r) viewer.scrollTo(u.page, r, false, settings.follow);
   }
   updateCurrentSection();
-  savePosition(docKey, u.b, u.k);
+  savePos();
   renderMiniText(-1);
+  markBookmarkButton();
+}
+
+let posTimer = 0;
+function savePos(): void {
+  const u = player.queue[player.cur];
+  if (!doc || !u || !docKey) return;
+  clearTimeout(posTimer);
+  const pos = { b: u.b, k: u.k, page: u.page, pages: doc.pages.length, progress: player.queue.length > 1 ? player.cur / (player.queue.length - 1) : 0 };
+  posTimer = window.setTimeout(() => api.setPosition(docKey, pos), 250);
 }
 
 function showWord(k: number): void {
@@ -221,11 +247,11 @@ async function fingerprint(data: Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("") + data.length.toString(36);
 }
 
-async function openFile(f: FileData): Promise<void> {
+async function openFile(f: FileData, target?: { b: number; k: number }): Promise<void> {
   player.stop();
   showLoading(`Opening ${f.name}…`, 0);
   try {
-    docKey = await fingerprint(f.data);
+    docKey = f.key || (await fingerprint(f.data));
     if (pdfTask) { void pdfTask.destroy(); pdfTask = null; }
     viewer.clear();
     pdfTask = pdfjs.getDocument({
@@ -236,7 +262,6 @@ async function openFile(f: FileData): Promise<void> {
       wasmUrl: "./pdfjs/wasm/",
       iccUrl: "./pdfjs/iccs/",
       isEvalSupported: false,
-      disableFontFace: new URLSearchParams(location.search).has("nofontface"),
     } as any);
     const pdf = await pdfTask.promise;
     const analysed = await analyze(pdf as any, f.name, (done, total) => showLoading(`Reading the layout · page ${done} of ${total}`, done / total));
@@ -245,14 +270,18 @@ async function openFile(f: FileData): Promise<void> {
     viewer.zoom = settings.zoom;
     viewer.load(pdf, doc);
     document.body.classList.remove("no-doc");
-    $("welcome").hidden = true;
+    hideHome();
     $("doc-title").textContent = f.name;
     document.title = `${f.name} · Readalong`;
     renderSections();
     renderSkipGroups();
     applySkips();
     rebuildQueue();
-    const pos = loadPosition(docKey);
+    const record: DocRecord | null = await api.docRecord(docKey);
+    bookmarks = record?.bookmarks ?? [];
+    renderBms();
+    // Where to start: a bookmark, the saved position, or the v0.1.0 position kept in the page's storage
+    const pos = target ?? record?.position ?? loadPosition(docKey);
     player.setQueue(player.queue, pos ? nearestUtterance(player.queue, pos.b, pos.k) : 0);
     showPosition(player.cur, false);
     const u = player.queue[player.cur];
@@ -272,25 +301,116 @@ async function openDialog(): Promise<void> {
   if (f) await openFile(f);
 }
 
-async function renderRecent(): Promise<void> {
-  const box = $("recent");
-  box.innerHTML = "";
-  const list = (await api.recent()).slice(0, 5);
-  if (!list.length) return;
-  const h = document.createElement("h4");
-  h.textContent = "Recent";
-  box.append(h);
-  for (const r of list) {
-    const b = document.createElement("button");
-    b.innerHTML = `<svg><use href="#i-file"/></svg><span class="rtext"><div class="rname"></div><div class="rpath"></div></span>`;
-    b.querySelector(".rname")!.textContent = r.name;
-    b.querySelector(".rpath")!.textContent = r.path;
-    b.addEventListener("click", async () => {
-      const f = await api.openPath(r.path);
-      if (f) await openFile(f);
-    });
-    box.append(b);
+// ------------------------------------------------------------------ home
+
+async function refreshHome(): Promise<void> {
+  await renderHome(api, {
+    open: async (d: RecentDoc, b?: Bookmark) => {
+      if (doc && d.key === docKey) { hideHome(); if (b) jumpToBookmark(b); return; }
+      const f = await api.openRecent(d.key);
+      if (f) await openFile(f, b);
+      else { toast(`${d.name} isn't where it was. Locate it to keep its bookmarks.`, 5000); void refreshHome(); }
+    },
+    locate: async (d: RecentDoc) => {
+      const r = await api.locate(d.key);
+      if (!r) return;
+      if (r.verdict === "different") toast("That file's content differs from the one bookmarked, so bookmarks may not line up.", 6000);
+      await openFile(r.file);
+    },
+    changed: () => void refreshHome(),
+  }, homeExpanded);
+}
+
+function showHome(): void {
+  player.pause();
+  viewer.clearHover();
+  $("home").hidden = false;
+  $("btn-home-back").hidden = !doc;
+  document.body.classList.add("home-open");
+  void refreshHome();
+}
+function hideHome(): void {
+  $("home").hidden = true;
+  document.body.classList.remove("home-open");
+}
+
+// ------------------------------------------------------------------ bookmarks
+
+function currentBookmark(): Bookmark | undefined {
+  const u = player.queue[player.cur];
+  return u ? bookmarks.find((m) => m.b === u.b && m.k === u.k) : undefined;
+}
+function markBookmarkButton(): void {
+  const on = !!currentBookmark();
+  for (const id of ["btn-bookmark", "m-bookmark"]) {
+    $(id).classList.toggle("on", on);
+    $(id).querySelector("use")?.setAttribute("href", on ? "#i-bookmark-on" : "#i-bookmark");
+    $(id).title = on ? "Bookmarked (Ctrl+B to open it)" : "Bookmark this sentence (Ctrl+B)";
   }
+}
+
+async function addBookmarkHere(): Promise<void> {
+  const u = player.queue[player.cur];
+  if (!doc || !u) { toast("Open a PDF to add bookmarks."); return; }
+  const existing = currentBookmark();
+  if (existing) { showTab("bookmarks"); editingBookmark = existing.id; renderBms(); return; }
+  const b = await api.addBookmark(docKey, { b: u.b, k: u.k, page: u.page, snippet: utteranceText(u) });
+  if (!b) return;
+  bookmarks = [...bookmarks, b].sort((x, y) => x.b - y.b || x.k - y.k);
+  renderBms();
+  markBookmarkButton();
+  toast(`Bookmarked page ${u.page + 1}. Rename it or add a note in the Bookmarks tab.`);
+}
+
+function jumpToBookmark(b: Bookmark): void {
+  if (!doc) return;
+  const idx = nearestUtterance(player.queue, b.b, b.k);
+  const u = player.queue[idx];
+  const r = u && uttRects(u)[0];
+  if (u && r) viewer.scrollTo(u.page, r, true);
+  viewer.userScrollAt = Date.now();
+  player.playing = true;
+  void player.playAt(idx, false);
+}
+
+function renderBms(): void {
+  $("bm-count").textContent = bookmarks.length ? String(bookmarks.length) : "";
+  renderBookmarks($("bookmarks"), bookmarks, {
+    jump: jumpToBookmark,
+    edit: (b) => { editingBookmark = b.id; renderBms(); },
+    save: async (b, patch) => {
+      editingBookmark = null;
+      if (patch.label !== undefined || patch.note !== undefined) {
+        await api.updateBookmark(docKey, b.id, patch);
+        const rec = await api.docRecord(docKey);
+        bookmarks = rec?.bookmarks ?? bookmarks;
+      }
+      renderBms();
+    },
+    remove: async (b) => {
+      await api.removeBookmark(docKey, b.id);
+      bookmarks = bookmarks.filter((m) => m.id !== b.id);
+      renderBms();
+      markBookmarkButton();
+    },
+  }, editingBookmark);
+  if (!doc) return;
+  viewer.setFlags(bookmarks.map((m) => {
+    const blk = doc!.blocks[m.b];
+    const box = blk?.rows ? blk.rows[m.k]?.box : blk ? sentenceRects(blk, m.k)[0] : undefined;
+    // The flag sits in the margin, at the height of the sentence's first line
+    const at = box ?? blk?.box ?? [0, 0, 0, 0];
+    return { id: m.id, page: m.page, box: [blk ? blk.box[0] : at[0], at[1], at[2], at[3]] as typeof at, label: m.label };
+  }));
+}
+
+function showTab(tab: "sections" | "bookmarks"): void {
+  if (!settings.sidebar) toggleSidebar();
+  $("tab-sections").classList.toggle("on", tab === "sections");
+  $("tab-bookmarks").classList.toggle("on", tab === "bookmarks");
+  $("tab-sections").parentElement!.classList.toggle("bm-on", tab === "bookmarks");
+  $("sections").hidden = tab !== "sections";
+  $("bookmarks").hidden = tab !== "bookmarks";
 }
 
 // ------------------------------------------------------------------ skipping
@@ -304,7 +424,7 @@ function blockSkipped(b: BlockData): boolean {
 }
 function describe(b: BlockData): string {
   const label = kindLabel(b.kind);
-  if (!b.group) return `${label}. Click to read from here.`;
+  if (!b.group) return "";
   return `${label}: ${b.why || "detected"}. ${blockSkipped(b) ? "Skipped" : "Read"}; change this in Settings.`;
 }
 
@@ -452,12 +572,13 @@ function setSpeed(v: number): void {
   $("speed-val").textContent = short;
   $("m-speed").textContent = short;
 }
-function setVoice(v: string): void {
+function setVoice(v: string, restart = true): void {
   settings.voice = v;
   saveSettings(settings);
   ($("voice") as HTMLSelectElement).value = v;
   ($("voice-quick") as HTMLSelectElement).value = v;
-  player.setVoice(v);
+  if (restart) player.setVoice(v);
+  else player.voice = v;
 }
 function toggleSheet(open?: boolean): void {
   const sheet = $("sheet");
@@ -491,7 +612,9 @@ function command(c: Command): void {
     case "open": void openDialog(); break;
     case "settings": toggleSheet(); break;
     case "sidebar": toggleSidebar(); break;
-    case "mini": if (screenshot) void screenshotMini(); break;
+    case "mini": break;
+    case "home": showHome(); break;
+    case "bookmark": void addBookmarkHere(); break;
     case "zoom-in": setZoom(settings.zoom + 0.1); break;
     case "zoom-out": setZoom(settings.zoom - 0.1); break;
   }
@@ -500,14 +623,16 @@ function command(c: Command): void {
 function onKey(e: KeyboardEvent): void {
   const t = e.target as HTMLElement;
   const tag = t.tagName.toLowerCase();
-  if ((tag === "input" && (t as HTMLInputElement).type !== "checkbox" && (t as HTMLInputElement).type !== "range") || tag === "select") return;
+  if ((tag === "input" && (t as HTMLInputElement).type !== "checkbox" && (t as HTMLInputElement).type !== "range") || tag === "select" || tag === "textarea") return;
   const k = e.key;
   const ctrl = e.ctrlKey || e.metaKey;
   let handled = true;
-  if (ctrl && k.toLowerCase() === "o") void openDialog();
+  if (ctrl && e.shiftKey && k.toLowerCase() === "o") showHome();
+  else if (ctrl && e.shiftKey && k.toLowerCase() === "b") toggleSidebar();
+  else if (ctrl && k.toLowerCase() === "o") void openDialog();
   else if (ctrl && k.toLowerCase() === "m") api.toggleMini();
   else if (ctrl && k.toLowerCase() === "t") api.setAlwaysOnTop(!windowState.alwaysOnTop);
-  else if (ctrl && k.toLowerCase() === "b") toggleSidebar();
+  else if (ctrl && k.toLowerCase() === "b") void addBookmarkHere();
   else if (ctrl && k === ",") toggleSheet();
   else if (ctrl && (k === "=" || k === "+")) setZoom(settings.zoom + 0.1);
   else if (ctrl && k === "-") setZoom(settings.zoom - 0.1);
@@ -520,16 +645,18 @@ function onKey(e: KeyboardEvent): void {
   else if (k === "ArrowUp") player.para(-1);
   else if (k === "[") setSpeed(settings.speed - 0.1);
   else if (k === "]") setSpeed(settings.speed + 0.1);
-  else if (k === "Escape") toggleSheet(false);
+  else if (k === "Escape") { if (!$("home").hidden && doc) hideHome(); else toggleSheet(false); }
   else handled = false;
   if (handled) e.preventDefault();
 }
 
 // ------------------------------------------------------------------ screenshots (self-test)
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Screenshot self-test (hidden window): stage each view, capture it, check the voice. */
 async function screenshotSequence(): Promise<void> {
-  // Show a mid-document sentence with a word highlighted, as during playback
-  await new Promise((r) => setTimeout(r, 400));
+  await wait(400);
   const target = Math.min(player.queue.length - 1, 2);
   player.cur = target;
   showPosition(target, false);
@@ -539,28 +666,65 @@ async function screenshotSequence(): Promise<void> {
     if (r) viewer.scrollTo(u.page, r, true);
     showWord(Math.min(3, u.tokens.length - 1));
   }
-  toggleSheet(true);
-  // Voice self-test: wait for the model, synthesize the staged sentence
-  for (let i = 0; i < 120 && !player.ttsReady; i++) await new Promise((r) => setTimeout(r, 500));
-  if (u && player.ttsReady) {
+  for (let i = 0; i < 120 && !player.ttsReady; i++) await wait(500);
+  // Every voice in the list must resolve to a file; three of them must speak
+  const voices = player.ttsReady ? await api.voices() : [];
+  const files = player.ttsReady ? await api.checkVoices() : [];
+  const missing = files.filter((f) => !f.present).map((f) => f.id);
+  api.shotLog(`voices offered ${voices.length}, files present ${files.length - missing.length}${missing.length ? `, missing ${missing.join(" ")}` : ""}`);
+  const sample = "The stage delivers 5 kW at 4.8–7.1 MHz, and the rail holds 48 V.".split(" ");
+  for (const v of ["af_heart", "am_michael", "bf_emma", "bm_george", "zz_missing"]) {
     try {
       const t0 = performance.now();
-      const r = await api.speak(u.tokens.map((t) => t.t), settings.voice, 1);
-      console.log(`voice self-test: ${r.duration.toFixed(2)} s of audio in ${((performance.now() - t0) / 1000).toFixed(2)} s (worker RTF ${r.rtf.toFixed(3)}), ${r.starts.length} word timings, ${r.wav.length} bytes`);
+      const r = await api.speak(sample, v, 1);
+      api.shotLog(`voice ${v}: ${r.duration.toFixed(2)} s of audio in ${((performance.now() - t0) / 1000).toFixed(2)} s, RTF ${r.rtf.toFixed(3)}, word starts ${r.starts.map((x) => x.toFixed(2)).join(" ")}${r.fallback ? `, fell back to ${r.fallback.used} (${r.fallback.reason})` : ""}`);
     } catch (e: any) {
-      console.log(`voice self-test failed: ${e?.message ?? e}`);
+      api.shotLog(`voice ${v} failed: ${e?.message ?? e}`);
     }
-  } else console.log("voice self-test: model not ready");
-  await new Promise((r) => setTimeout(r, 1000));
-  api.shotReady("full");
-}
-async function screenshotMini(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 700));
+  }
+  // Full layout, with the settings sheet showing pronunciations, and the
+  // pointer resting on a later sentence (hover shows what a click would read)
+  toggleSheet(true);
+  await wait(600);
+  const hov = player.queue[Math.min(player.queue.length - 1, target + 3)];
+  const hr = hov && uttRects(hov)[0];
+  const pageEl = hov && document.querySelector<HTMLElement>(`.page[data-p="${hov.page}"]`);
+  if (hr && pageEl && doc) {
+    const pr = pageEl.getBoundingClientRect(), P = doc.pages[hov.page];
+    const x = pr.left + (((hr[0] + hr[2]) / 2) / P.w) * pr.width, y = pr.top + (((hr[1] + hr[3]) / 2) / P.h) * pr.height;
+    document.elementFromPoint(x, y)?.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, bubbles: true }));
+    await wait(300);
+  }
+  await api.shot("full");
+  viewer.clearHover();
+  toggleSheet(false);
+  // Bookmarks tab with two bookmarks and their flags
+  for (const i of [target, Math.min(player.queue.length - 1, target + 6)]) {
+    player.cur = i;
+    showPosition(i, false);
+    await addBookmarkHere();
+  }
+  player.cur = target;
+  showPosition(target, false);
+  showTab("bookmarks");
+  await wait(500);
+  await api.shot("bookmarks");
+  showTab("sections");
+  // Home view
+  showHome();
+  homeExpanded.add(docKey);
+  await refreshHome();
+  await wait(500);
+  await api.shot("home");
+  hideHome();
+  // Mini player
+  api.toggleMini();
+  await wait(900);
   updateMini();
-  const u = player.queue[player.cur];
-  if (u) renderMiniText(Math.min(3, u.tokens.length - 1));
-  await new Promise((r) => setTimeout(r, 300));
-  api.shotReady("mini");
+  const cu = player.queue[player.cur];
+  if (cu) renderMiniText(Math.min(3, cu.tokens.length - 1));
+  await wait(300);
+  await api.shot("mini");
 }
 
 // ------------------------------------------------------------------ wiring
@@ -582,6 +746,38 @@ function wire(): void {
   click("btn-settings", () => toggleSheet());
   click("btn-sheet-close", () => toggleSheet(false));
   click("btn-open", () => void openDialog());
+  click("btn-home-back", hideHome);
+  click("btn-bookmark", () => void addBookmarkHere());
+  click("m-bookmark", () => void addBookmarkHere());
+  click("tab-sections", () => showTab("sections"));
+  click("tab-bookmarks", () => showTab("bookmarks"));
+  $<HTMLInputElement>("pron-search").addEventListener("input", (e) => pron.search((e.target as HTMLInputElement).value));
+  click("pron-add", () => pron.add());
+  click("pron-restore", () => { const n = pron.restore(); toast(n ? `Restored ${n} engineering units.` : "All engineering units are already there."); });
+  click("pron-export", async () => { const p = await api.exportLexicon(); if (p) toast(`Saved ${p}`); });
+  click("pron-import", async () => {
+    const lex = await api.importLexicon();
+    if (!lex) return;
+    // Imported entries are added; an entry with the same id replaces the old one
+    const ids = new Set(lex.entries.map((e) => e.id));
+    pron.set({ version: 1, entries: [...lex.entries, ...pron.lex.entries.filter((e) => !ids.has(e.id))] });
+    await api.setLexicon(pron.lex);
+    player.lexRev++;
+    toast(`Imported ${lex.entries.length} pronunciations.`);
+  });
+  click("pron-play", async () => {
+    if (!player.ttsReady) { toast("The voice is still loading."); return; }
+    const text = $<HTMLInputElement>("pron-sample").value.trim();
+    if (!text) return;
+    try {
+      const r = await api.speak(text.split(/\s+/), settings.voice, Math.min(2, settings.speed));
+      const a = new Audio(URL.createObjectURL(new Blob([r.wav as BlobPart], { type: "audio/wav" })));
+      player.pause();
+      void a.play();
+    } catch (e: any) {
+      toast(`Preview failed: ${e?.message ?? e}`);
+    }
+  });
   click("voice-pill", () => { if ($("voice-pill").classList.contains("error")) api.retryTts(); });
   for (const [a, b] of [["btn-play", "m-play"], ["btn-prev", "m-prev"], ["btn-next", "m-next"], ["btn-slower", "m-slower"], ["btn-faster", "m-faster"]]) {
     const f = {
@@ -617,6 +813,8 @@ function wire(): void {
   theme.value = settings.theme;
   theme.addEventListener("change", () => { settings.theme = theme.value as any; saveSettings(settings); applyTheme(); });
 
+  viewer.readable = (b) => (blockSkipped(b) ? { ok: false, why: `${kindLabel(b.kind)}: skipped (${b.why || "detected"})` } : { ok: true, why: "" });
+  viewer.onFlagClick = (id) => { const b = bookmarks.find((m) => m.id === id); if (b) jumpToBookmark(b); };
   viewer.onBlockClick = (id, k) => {
     if (!doc) return;
     const b = doc.blocks[id];
@@ -640,7 +838,7 @@ function wire(): void {
     const file = [...(e.dataTransfer?.files ?? [])].find((f) => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
     if (!file) { toast("Drop a PDF file."); return; }
     const path = api.pathForFile(file);
-    const f = path ? await api.openPath(path) : { path: "", name: file.name, data: new Uint8Array(await file.arrayBuffer()) };
+    const f = path ? await api.openPath(path) : { path: "", name: file.name, data: new Uint8Array(await file.arrayBuffer()), key: "" };
     if (f) await openFile(f);
   });
 
@@ -670,8 +868,9 @@ async function init(): Promise<void> {
   applyWindowState(info.window);
   $("about").textContent = `Readalong ${info.version}. Voice: Kokoro-82M via kokoro-js, on this PC. PDF: PDF.js.`;
   showTts(await api.ttsStatus());
-  void renderRecent();
+  pron.set(await api.lexicon());
   if (info.file) await openFile(info.file);
+  else showHome();
 }
 
 void init();

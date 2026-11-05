@@ -26,6 +26,8 @@ export interface PlayerHooks {
   /** Playing / waiting state changed. */
   state(playing: boolean, waiting: boolean): void;
   message(text: string): void;
+  /** The requested voice couldn't be loaded and the default was used. */
+  voiceFallback(info: { requested: string; used: string; reason: string }): void;
   /** Gap after an utterance, in ms at 1x. */
   gapAfter(index: number): number;
 }
@@ -38,6 +40,8 @@ export class Player {
   ttsReady = false;
   voice = "af_heart";
   speed = 1;
+  /** Bumped when pronunciations change, so cached clips are made again. */
+  lexRev = 0;
   private audio = new Audio();
   private clips = new Map<string, Clip>();
   private waiters = new Map<string, ((c: Clip) => void)[]>();
@@ -57,7 +61,7 @@ export class Player {
     return Math.round(Math.min(2, Math.max(0.5, this.speed)) * 20) / 20;
   }
   private key(u: Utterance): string {
-    return `${this.voice}|${this.kSpeed()}|${utteranceText(u)}`;
+    return `${this.voice}|${this.kSpeed()}|${this.lexRev}|${utteranceText(u)}`;
   }
 
   setQueue(queue: Utterance[], cur: number): void {
@@ -82,6 +86,7 @@ export class Player {
     const speed = this.kSpeed();
     try {
       const r = await this.api.speak(u.tokens.map((t) => t.t), this.voice, speed);
+      if (r.fallback) this.hooks.voiceFallback(r.fallback);
       const blob = new Blob([r.wav as BlobPart], { type: "audio/wav" });
       Object.assign(clip, { state: "ready", url: URL.createObjectURL(blob), starts: r.starts, duration: r.duration, speed });
     } catch (e: any) {

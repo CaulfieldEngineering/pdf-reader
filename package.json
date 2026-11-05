@@ -1,7 +1,7 @@
 {
   "name": "pdf-reader",
   "productName": "Readalong",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local, offline voice PDF reader: neural text to speech with sentence highlighting and smart skipping of headers, tables, figures and citations.",
   "author": "Caulfield Engineering",
   "license": "MIT",
@@ -19,6 +19,7 @@
     "fixtures": "tsx scripts/make-fixtures.ts",
     "analyze": "tsx scripts/analyze.ts",
     "tts-bench": "tsx scripts/tts-bench.ts",
+    "sync-bench": "tsx scripts/sync-bench.ts",
     "icons": "tsx scripts/make-icons.ts",
     "preview:web": "node scripts/preview-web.mjs",
     "dist": "npm run build && electron-builder --win"
